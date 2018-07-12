@@ -86,7 +86,7 @@ trait CommonBuildCommand {
         _ <- buildEnvironment.executeStage(buildConfig)
       } yield ()
 
-      val valid: ValidationResult[Unit] = (res.toValidated, buildEnvironment.executeCleanup(buildConfig).toValidated).mapN(_ => ())
+      val valid: ValidationResult[Unit] = List(res, buildEnvironment.executeCleanup(buildConfig)).traverse_[ValidationResult, Unit](_.toValidated)
 
       valid.toEither
     }

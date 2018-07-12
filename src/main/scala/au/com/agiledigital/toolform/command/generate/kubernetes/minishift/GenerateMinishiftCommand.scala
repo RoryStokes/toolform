@@ -16,8 +16,7 @@ import au.com.agiledigital.toolform.reader.ProjectReader
 import au.com.agiledigital.toolform.util.DateUtil
 import au.com.agiledigital.toolform.version.BuildInfo
 import cats.data.Validated.{invalid, valid}
-import cats.data.Validated
-import cats.data.NonEmptyList
+import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits._
 import com.monovore.decline.Opts
 
@@ -59,6 +58,7 @@ class GenerateMinishiftCommand extends ToolFormGenerateCommandPlugin {
 }
 
 object GenerateMinishiftCommand extends YamlWriter {
+  type ValidationResult[A] = ValidatedNel[ToolFormError, A]
 
   /**
     * The main entry point into the Kubernetes (Minishift) file generation.
@@ -70,7 +70,7 @@ object GenerateMinishiftCommand extends YamlWriter {
     */
   def runGenerateMinishift(sourceFilePath: String, outFile: File, project: Project): Either[NonEmptyList[ToolFormError], String] =
     for {
-      validatedResources <- project.resources.values.toList.traverse(validateResource).toEither
+      validatedResources <- project.resources.values.toList.traverse[ValidationResult, Resource](validateResource).toEither
       writerStatus       <- writeAll(validatedResources, sourceFilePath, outFile, project)
     } yield writerStatus
 

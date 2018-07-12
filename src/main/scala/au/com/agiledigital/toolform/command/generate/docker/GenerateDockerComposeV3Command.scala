@@ -14,8 +14,7 @@ import au.com.agiledigital.toolform.reader.ProjectReader
 import au.com.agiledigital.toolform.util.DateUtil
 import au.com.agiledigital.toolform.version.BuildInfo
 import cats.data.Validated.{invalid, valid}
-import cats.data.Validated
-import cats.data.NonEmptyList
+import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits._
 import com.monovore.decline.Opts
 
@@ -53,6 +52,7 @@ class GenerateDockerComposeV3Command extends ToolFormGenerateCommandPlugin {
 }
 
 object GenerateDockerComposeV3Command extends YamlWriter {
+  type ValidationResult[A] = ValidatedNel[ToolFormError, A]
 
   /**
     * The main entry point into the Docker Compose file generation.
@@ -64,7 +64,7 @@ object GenerateDockerComposeV3Command extends YamlWriter {
     */
   def runGenerateDockerComposeV3(sourceFilePath: String, outFile: File, project: Project): Either[NonEmptyList[ToolFormError], String] =
     for {
-      validatedResources <- project.sortedResources.values.toList.traverse(validateResource).toEither
+      validatedResources <- project.sortedResources.values.toList.traverse[ValidationResult, Resource](validateResource).toEither
       writerStatus       <- writeAll(validatedResources, sourceFilePath, outFile, project)
     } yield writerStatus
 

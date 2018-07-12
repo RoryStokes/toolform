@@ -1,7 +1,6 @@
 package au.com.agiledigital.toolform.model
 
 import au.com.agiledigital.toolform.util.EnumArgument
-import enumeratum.EnumEntry.Lowercase
 import enumeratum.{Enum, EnumEntry}
 
 import scala.collection.immutable.IndexedSeq

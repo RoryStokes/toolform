@@ -8,49 +8,96 @@ import au.com.agiledigital.toolform.command.build.BuildEnvironment
 import au.com.agiledigital.toolform.model.BuilderConfig
 import cats.data.NonEmptyList
 import cats.implicits._
-import com.goyeau.kubernetesclient.{KubeConfig, KubernetesClient}
-import com.spotify.docker.client.DockerClient.ListContainersParam
-import com.spotify.docker.client.messages.HostConfig.Bind
-import com.spotify.docker.client.messages.Container
+import com.goyeau.kubernetes.client.{KubeConfig, KubernetesClient, KubernetesException}
 import com.spotify.docker.client.{DockerClient, LogStream}
-import io.k8s.api.core.v1.{Namespace, NamespaceSpec}
-import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+import io.k8s.api.core.v1._
 
-import scala.collection.JavaConverters._
-import scala.concurrent.Await
+import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.FiniteDuration
 import java.util.concurrent.TimeUnit.SECONDS
 
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
+import io.k8s.api.apps.v1beta2.{Deployment, DeploymentSpec}
+import io.k8s.apimachinery.pkg.apis.meta.v1.{LabelSelector, ObjectMeta}
 
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.{Success, Try}
 
 class KubernetesBuildEnvironment extends BuildEnvironment {
-  implicit val system       = ActorSystem()
-  implicit val materializer = ActorMaterializer()
-  val defaultAwait          = FiniteDuration(60, SECONDS)
-  val client                = KubernetesClient(KubeConfig(new File("/home/rory/.kube/microk8s.config")))
-  def bindPath(path: Path, target: String) =
-    Bind
-      .from(path.toFile.getAbsolutePath)
-      .to(s"/s2a/$target")
-      .build()
 
-  override def executeInit(builderConfig: BuilderConfig) = {
-    val project = Namespace(
-      apiVersion = Some("v1"),
+  val defaultAwait = FiniteDuration(60, SECONDS)
+
+  def withClient[A](inner: KubernetesClient => Future[Either[NonEmptyList[ToolFormError], A]]): Either[NonEmptyList[ToolFormError], A] = {
+    implicit val system       = ActorSystem()
+    implicit val materializer = ActorMaterializer()
+    val client                = KubernetesClient(KubeConfig(new File("/home/rory/.kube/microk8s.config")))
+
+    val fut = for {
+      result <- inner(client)
+    } yield result
+    val result = Try(Await.result(fut, defaultAwait)).toEither.leftMap { e =>
+      e.printStackTrace()
+      NonEmptyList.of(ToolFormError(s"Failed to execute Kubernetes commands: [${e.getMessage}]"))
+    }.joinRight
+    materializer.shutdown()
+    Await.result(system.terminate(), defaultAwait)
+    result
+  }
+
+  override def executeInit(builderConfig: BuilderConfig) = withClient { client =>
+    val namespaceDef: Namespace = Namespace(
       metadata = Some(
         ObjectMeta(
           name = Some(builderConfig.namespace)
         ))
     )
 
-    val fut = client.namespaces.create(project)
-    val ns  = Await.result(fut, defaultAwait)
+    val deploymentDef = Deployment(
+      metadata = Option(ObjectMeta(name = Option(builderConfig.containerName), namespace = Option(builderConfig.namespace))),
+      spec = Option(
+        DeploymentSpec(
+          template = PodTemplateSpec(
+            metadata = Option(
+              ObjectMeta(
+                labels = Option(Map("app" -> "web", "tier" -> "frontend", "environment" -> "myenv"))
+              )
+            ),
+            spec = Option(
+              PodSpec(
+                containers = Seq(
+                  Container(
+                    name = "tfbuilder",
+                    image = Some(builderConfig.image),
+                    volumeMounts = Option(Seq(VolumeMount(name = "nginx-config", mountPath = "/etc/nginx/conf.d"))),
+                    ports = Option(Seq(ContainerPort(name = Option("http"), containerPort = 8080)))
+                  )
+                ),
+                volumes = Option(
+                  Seq(
+                    Volume(
+                      name = "nginx-config",
+                      configMap = Option(ConfigMapVolumeSource(name = Option("nginx-config")))
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
 
-    Await.result(system.terminate(), defaultAwait)
-    println(ns)
+    println(deploymentDef)
+
+    for {
+      namespace <- client.namespaces.get(builderConfig.namespace).recoverWith {
+                    case e: KubernetesException if e.statusCode == 404 =>
+                      client.namespaces.create(namespaceDef).map(_ => namespaceDef)
+                  }
+      deployment <- client.deployments.namespace(builderConfig.namespace).create(deploymentDef)
+    } yield Right(())
+
 //    val hostConfig = HostConfig.builder
 //      .appendBinds(
 //        bindPath(builderConfig.sourceDir, "source"),
@@ -69,12 +116,7 @@ class KubernetesBuildEnvironment extends BuildEnvironment {
 //    val containerId = creation.id
 //
 //    docker.startContainer(containerId)
-
-    Right(())
   }
-
-  def getContainer(docker: DockerClient, name: String): Option[Container] =
-    docker.listContainers(ListContainersParam.filter("name", name)).asScala.headOption
 
   override def executeScript(script: String, builderConfig: BuilderConfig, optional: Boolean = false): Either[NonEmptyList[ToolFormError], Unit] =
 //    getContainer(docker, builderConfig.containerName)
@@ -100,21 +142,8 @@ class KubernetesBuildEnvironment extends BuildEnvironment {
 
   case class ExecutionResult(exitCode: Int)
 
-  def execute(command: Seq[String], container: Container, docker: DockerClient): ExecutionResult = {
-    val exec = docker.execCreate(
-      container.id,
-      command.toArray
-    )
-    val output: LogStream = docker.execStart(exec.id)
-    //output.attach(System.out, System.err, true)
-    var result = docker.execInspect(exec.id)
-    while (result.running) {
-      Thread.sleep(500)
-      result = docker.execInspect(exec.id)
-    }
-    //println(output.readFully)
-    ExecutionResult(result.exitCode.toInt)
-  }
+  def execute(command: Seq[String], container: Container, docker: DockerClient): ExecutionResult =
+    ExecutionResult(0)
 
   def fileExists(script: String, container: Container, docker: DockerClient): Boolean =
     execute(Seq("ls", script), container, docker).exitCode == 0

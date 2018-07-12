@@ -4,14 +4,13 @@ import java.io.File
 
 import au.com.agiledigital.toolform.app.ToolFormError
 import au.com.agiledigital.toolform.model.{Component, Endpoint, Project}
-import cats.data.Validated
+import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.data.Validated.{invalid, valid}
 import com.typesafe.config.ConfigFactory
 import pureconfig._
 import pureconfig.error.{ConfigReaderFailures, KeyNotFound}
 import pureconfig.module.enumeratum._
 import cats.implicits._
-import cats.data.NonEmptyList
 
 import scala.util.{Failure, Success, Try}
 
@@ -49,9 +48,11 @@ object ProjectReader {
       }
     }
 
+  type Result[A] = ValidatedNel[ToolFormError, A]
+
   private def validatedProject(project: Project): Either[NonEmptyList[ToolFormError], Project] =
     project.topology.endpoints.toList
-      .traverse {
+      .traverse[Result, Endpoint] {
         case (endpointId, endpoint) =>
           validatedEndpoint(endpointId, endpoint, project.components)
       }
