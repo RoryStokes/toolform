@@ -70,7 +70,7 @@ object GenerateMinishiftCommand extends YamlWriter {
     */
   def runGenerateMinishift(sourceFilePath: String, outFile: File, project: Project): Either[NonEmptyList[ToolFormError], String] =
     for {
-      validatedResources <- project.resources.values.toList.traverseU(validateResource).toEither
+      validatedResources <- project.resources.values.toList.traverse(validateResource).toEither
       writerStatus       <- writeAll(validatedResources, sourceFilePath, outFile, project)
     } yield writerStatus
 
@@ -83,10 +83,10 @@ object GenerateMinishiftCommand extends YamlWriter {
         _ <- write(s"# Date: ${DateUtil.formattedDateString}")
         _ <- project.components.values.filter(shouldWriteService).toList.traverse_(writeService)
         _ <- validResources.filter(shouldWriteService).traverse_(writeService)
-        _ <- validResources.filter(isDiskResourceType).traverse_((resource) => writeVolumeClaim(resource))
-        _ <- project.components.values.toList.traverse_((component) => writeDeployment(project, component))
-        _ <- validResources.filterNot(isDiskResourceType).traverse_((resource) => writeDeployment(project, resource))
-        _ <- project.topology.endpoints.toList.traverse_ { case (endpointId, endpoint) => writeRouter(endpointId, endpoint) }
+        _ <- validResources.filter(isDiskResourceType).traverse_[Result, Unit]((resource) => writeVolumeClaim(resource))
+        _ <- project.components.values.toList.traverse_[Result, Unit]((component) => writeDeployment(project, component))
+        _ <- validResources.filterNot(isDiskResourceType).traverse_[Result, Unit]((resource) => writeDeployment(project, resource))
+        _ <- project.topology.endpoints.toList.traverse_[Result, Unit] { case (endpointId, endpoint) => writeRouter(endpointId, endpoint) }
       } yield ()
 
       val context = WriterContext(writer)

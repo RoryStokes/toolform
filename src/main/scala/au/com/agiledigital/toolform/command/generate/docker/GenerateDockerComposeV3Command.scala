@@ -64,7 +64,7 @@ object GenerateDockerComposeV3Command extends YamlWriter {
     */
   def runGenerateDockerComposeV3(sourceFilePath: String, outFile: File, project: Project): Either[NonEmptyList[ToolFormError], String] =
     for {
-      validatedResources <- project.sortedResources.values.toList.traverseU(validateResource).toEither
+      validatedResources <- project.sortedResources.values.toList.traverse(validateResource).toEither
       writerStatus       <- writeAll(validatedResources, sourceFilePath, outFile, project)
     } yield writerStatus
 

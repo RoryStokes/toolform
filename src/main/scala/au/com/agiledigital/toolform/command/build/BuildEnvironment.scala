@@ -1,21 +1,25 @@
 package au.com.agiledigital.toolform.command.build
 
+import au.com.agiledigital.toolform.app.ToolFormError
 import au.com.agiledigital.toolform.model.{BuilderConfig, Component, Project}
+import cats.data.NonEmptyList
 
 trait BuildEnvironment {
+  def executeInit(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit]
+  def executeScript(script: String, buildConfig: BuilderConfig, optional: Boolean = false): Either[NonEmptyList[ToolFormError], Unit]
+  def executeCleanup(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit]
 
-  def configForComponent(component: Component, project: Project) = BuilderConfig(
-    image = s"rorystokes/${component.builder}-tfbuilder",
-    containerName = s"${project.id}-${component.id}-tfbuilder"
-  )
-
-  def initialiseBuilder(builderConfig: BuilderConfig): Unit
-
-  def initialiseBuilder(component: Component, project: Project): Unit =
-    initialiseBuilder(configForComponent(component, project))
-
-  def cleanupBuilder(builderConfig: BuilderConfig): Unit
-
-  def cleanupBuilder(component: Component, project: Project): Unit =
-    initialiseBuilder(configForComponent(component, project))
+  def executeFetch(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit] =
+    executeScript("fetch", buildConfig, optional = true)
+  def executePrep(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit] =
+    executeScript("prep", buildConfig, optional = true)
+  def executeTest(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit] = {
+    println(buildConfig)
+    println("testing")
+    executeScript("test", buildConfig)
+  }
+  def executeBuild(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit] =
+    executeScript("build", buildConfig)
+  def executeStage(buildConfig: BuilderConfig): Either[NonEmptyList[ToolFormError], Unit] =
+    executeScript("stage", buildConfig, optional = true)
 }

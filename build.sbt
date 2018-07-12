@@ -18,8 +18,6 @@ assemblyOption in assembly ~= {
 
 val pureconfigVersion = "0.8.0"
 
-resolvers += "softprops-maven" at "http://dl.bintray.com/content/softprops/maven"
-
 //Define dependencies.
 libraryDependencies ++= Seq(
   "org.scalatest"         %% "scalatest"             % "3.0.1" % "test",
@@ -27,10 +25,11 @@ libraryDependencies ++= Seq(
   "com.typesafe"          % "config"                 % "1.3.1",
   "com.github.pureconfig" %% "pureconfig"            % pureconfigVersion,
   "com.github.pureconfig" %% "pureconfig-enumeratum" % pureconfigVersion,
-  "com.monovore"          %% "decline"               % "0.3.0",
+  "com.monovore"          %% "decline"               % "0.4.0",
   "com.beachape"          %% "enumeratum"            % "1.5.12",
-  "org.typelevel"         %% "cats-core"             % "0.9.0",
-  "me.lessis"             %% "tugboat"               % "0.2.0"
+  "org.typelevel"         %% "cats-core"             % "1.0.1",
+  "com.spotify"           % "docker-client"          % "8.8.3",
+  "com.goyeau"            %% "kubernetes-client"     % "0.0.5"
 )
 
 // For Settings/Task reference, see http://www.scala-sbt.org/release/sxr/sbt/Keys.scala.html

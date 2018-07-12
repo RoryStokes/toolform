@@ -51,7 +51,7 @@ object ProjectReader {
 
   private def validatedProject(project: Project): Either[NonEmptyList[ToolFormError], Project] =
     project.topology.endpoints.toList
-      .traverseU {
+      .traverse {
         case (endpointId, endpoint) =>
           validatedEndpoint(endpointId, endpoint, project.components)
       }
