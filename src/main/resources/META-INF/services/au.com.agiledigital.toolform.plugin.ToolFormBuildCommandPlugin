@@ -1,0 +1,2 @@
+au.com.agiledigital.toolform.command.build.kubernetes.BuildKubernetesCommand
+au.com.agiledigital.toolform.command.build.docker.BuildDockerCommand
