@@ -1,6 +1,7 @@
 package au.com.agiledigital.toolform.command.build
 
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit.MINUTES
 
 import au.com.agiledigital.toolform.app.ToolFormError
 import au.com.agiledigital.toolform.model.{BuildPhase, BuilderConfig, Component, Project}
@@ -9,6 +10,9 @@ import au.com.agiledigital.toolform.reader.ProjectReader
 import cats.data.{NonEmptyList, ValidatedNel}
 import com.monovore.decline.Opts
 import cats.implicits._
+
+import scala.concurrent.{Await, Future}
+import scala.concurrent.duration.FiniteDuration
 
 trait CommonBuildCommand {
   def buildEnvironment: BuildEnvironment
@@ -43,17 +47,19 @@ trait CommonBuildCommand {
     val executor = getPhaseExecutor(phase)
     readConfig(dir) flatMap { project =>
       val results = project.components.values map { component =>
-        configForComponent(component, project, dir) flatMap { config =>
-          val stagingDir = config.stagingDir.toFile
-          if (stagingDir.isDirectory) {
-            stagingDir.delete()
+        Future {
+          configForComponent(component, project, dir) flatMap { config =>
+            val stagingDir = config.stagingDir.toFile
+            if (stagingDir.isDirectory) {
+              stagingDir.listFiles.foreach(_.delete())
+            }
+            stagingDir.mkdirs()
+            executor(config)
           }
-          stagingDir.mkdirs()
-          executor(config)
         }
       }
 
-      val maybeErrors = results.flatMap {
+      val maybeErrors = Await.result(Future.sequence(results), FiniteDuration(120, MINUTES)).flatMap {
         case Left(errors) => errors.toList
         case _            => Nil
       }

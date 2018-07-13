@@ -28,9 +28,8 @@ libraryDependencies ++= Seq(
   "com.monovore"          %% "decline"               % "0.4.0",
   "com.beachape"          %% "enumeratum"            % "1.5.12",
   "org.typelevel"         %% "cats-core"             % "1.0.1",
-  "com.spotify"           % "docker-client"          % "8.8.3",
-  "com.goyeau"            %% "kubernetes-client"     % "0.0.5",
-  "io.skuber"             %% "skuber"                % "2.0.8"
+  "com.spotify"           %  "docker-client"         % "8.8.3",
+  "io.fabric8"            %  "kubernetes-client"     % "4.0.3",
 )
 
 // For Settings/Task reference, see http://www.scala-sbt.org/release/sxr/sbt/Keys.scala.html

@@ -1,6 +1,6 @@
 package au.com.agiledigital.toolform.command.build.kubernetes
 
-import java.io.File
+import java.io._
 import java.nio.file.Path
 
 import au.com.agiledigital.toolform.app.ToolFormError
@@ -8,150 +8,157 @@ import au.com.agiledigital.toolform.command.build.BuildEnvironment
 import au.com.agiledigital.toolform.model.BuilderConfig
 import cats.data.NonEmptyList
 import cats.implicits._
-import com.goyeau.kubernetes.client.{KubeConfig, KubernetesClient, KubernetesException}
 import com.spotify.docker.client.{DockerClient, LogStream}
 
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.FiniteDuration
 import java.util.concurrent.TimeUnit.SECONDS
 
-import akka.actor.{ActorSystem, Scheduler}
-import akka.http.javadsl.model.ws.Message
-import akka.http.scaladsl.model.ws.{Message, TextMessage}
-import akka.stream.ActorMaterializer
-import akka.pattern.after
-import akka.stream.scaladsl.Flow
-import io.k8s.apimachinery.pkg.apis.meta.v1.Status
-import skuber.Container.Running
-import skuber.Pod.Phase
-
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.util.{Success, Try}
-import skuber._
-import skuber.json.format._
-import skuber.apps.v1.Deployment
+import com.google.common.io.CharStreams
+import io.fabric8.kubernetes.api.model.{DoneablePod, Namespace, Pod}
+import io.fabric8.kubernetes.client.dsl.{ContainerResource, ExecWatch, LogWatch, PodResource}
+import io.fabric8.kubernetes.client.internal.KubeConfigUtils
+import io.fabric8.kubernetes.client.utils.InputStreamPumper
+import io.fabric8.kubernetes.client.{ConfigBuilder, DefaultKubernetesClient, KubernetesClient}
+import org.apache.commons.compress.archivers.tar.{TarArchiveEntry, TarArchiveInputStream, TarArchiveOutputStream}
+import org.apache.commons.io.IOUtils
 
 class KubernetesBuildEnvironment extends BuildEnvironment {
 
   val defaultAwait = FiniteDuration(60, SECONDS)
   val delay        = FiniteDuration(10, SECONDS)
+  val client       = new DefaultKubernetesClient()
 
-  implicit var system = ActorSystem()
+  def waitUntilStatus(builderConfig: BuilderConfig, status: Option[String], retries: Int): Either[NonEmptyList[ToolFormError], Pod] = {
+    val pod = client.pods
+      .inNamespace(builderConfig.namespace)
+      .withName(builderConfig.containerName)
+      .get()
 
-  def withClient[A](inner: (KubernetesClient, K8SRequestContext) => Future[Either[NonEmptyList[ToolFormError], A]]): Either[NonEmptyList[ToolFormError], A] = {
-    val configFile = new File("/home/rory/.kube/microk8s.config")
-    system = ActorSystem()
-    implicit val materializer = ActorMaterializer()
-    val client                = KubernetesClient(KubeConfig(configFile))
-
-    K8SConfiguration.parseKubeconfigFile(configFile.toPath).toEither.leftMap { e =>
-      e.printStackTrace()
-      NonEmptyList.of(ToolFormError(s"Failed to parse kubernetes config Kubernetes commands: [${configFile.getAbsolutePath}]"))
-    } flatMap { config =>
-      val k8s = k8sInit(config)
-
-      val fut = for {
-        result <- inner(client, k8s)
-      } yield result
-      val result = Try(Await.result(fut, defaultAwait)).toEither.leftMap { e =>
-        e.printStackTrace()
-        NonEmptyList.of(ToolFormError(s"Failed to execute Kubernetes commands: [${e.getMessage}]"))
-      }.joinRight
-      materializer.shutdown()
-      Await.result(system.terminate(), defaultAwait)
-      result
+    if (Option(pod).map(_.getStatus.getPhase) == status) {
+      Right(pod)
+    } else if (retries > 0) {
+      Thread.sleep(1000)
+      waitUntilStatus(builderConfig, status, retries - 1)
+    } else {
+      Left(NonEmptyList.of(ToolFormError(s"Timed out waiting for pod [${builderConfig.containerName}] to enter desired state [$status]")))
     }
-
   }
 
-  def retryUntilSome[T](op: => Future[Option[T]], delay: FiniteDuration, retries: Int): Future[Either[NonEmptyList[ToolFormError], T]] =
-    op flatMap {
-      case None if retries > 0 => after(delay, system.scheduler)(retryUntilSome(op, delay, retries - 1))
-      case Some(value)         => Future.successful(Right(value))
-      case _                   => Future.successful(Left(NonEmptyList.of(ToolFormError(s"Operation timed out after multiple retries"))))
-    }
+  override def executeInit(builderConfig: BuilderConfig) = {
+    Option(client.namespaces.withName(builderConfig.namespace).get()).getOrElse(
+      client.namespaces
+        .createNew()
+        .withNewMetadata
+        .withName(builderConfig.namespace)
+        .endMetadata()
+        .done())
 
-  def getPod(selector: LabelSelector, client: KubernetesClient, k8s: K8SRequestContext): Future[Option[Pod]] =
-    (k8s listSelected [PodList] selector) map { pods: PodList =>
-      pods.toList.find(_.status.flatMap(_.phase).contains(Phase.Running))
-    }
+    Option(client.pods.inNamespace(builderConfig.namespace).withName(builderConfig.containerName).get()).getOrElse(
+      client.pods
+        .inNamespace(builderConfig.namespace)
+        .createOrReplaceWithNew()
+        .withNewMetadata()
+        .withName(builderConfig.containerName)
+        .endMetadata()
+        .withNewSpec()
+        .addNewContainer()
+        .withName("tfbuilder")
+        .withImage(builderConfig.image)
+        .withCommand("tail", "-f", "/dev/null")
+        .endContainer()
+        .endSpec()
+        .done())
 
-  def copyToPod(builderConfig: BuilderConfig, pod: Pod, source: Path, destination: String, client: KubernetesClient, k8s: K8SRequestContext
-               ): Future[Either[NonEmptyList[ToolFormError], Unit]] = {
-    val flow = Flow.fromFunction { x: Either[Status, String] =>
-      TextMessage("No idea what this is for")
-    }.mapMaterializedValue(_ => Future.successful("Done"))
-    client.pods.namespace(k8s.namespaceName).exec[String](
-      pod.name,
-      flow,
-      container = Some("tfbuilder"),
-      command = Seq.empty,
-      stdin = false,
-      stdout = true,
-      stderr = true,
-      tty = false
-    )
+    waitUntilStatus(builderConfig, Some("Running"), 30)
 
-    Future.successful(Right(()))
+    client.pods
+      .inNamespace(builderConfig.namespace)
+      .withName(builderConfig.containerName)
+      .inContainer("tfbuilder")
+      .redirectingOutput()
+      .exec("mkdir", "-p", s"/s2a/test_results", s"/s2a/artifacts")
+      .close()
+
+    val tempFile    = File.createTempFile(s"${builderConfig.containerName}-source-", ".tar")
+    var writeStream = new FileOutputStream(tempFile)
+    val tarOut      = new TarArchiveOutputStream(writeStream)
+    streamTar(builderConfig.sourceDir.toFile, tarOut, "source")
+    val readStream = new FileInputStream(tempFile)
+
+    val watch = client.pods
+      .inNamespace(builderConfig.namespace)
+      .withName(builderConfig.containerName)
+      .inContainer("tfbuilder")
+      .readingInput(readStream)
+      .exec("tar", "xf", "-", "-C", "/s2a")
+
+    watch.close()
+    readStream.close()
+
+    tempFile.delete()
+
+    Right(())
   }
 
-  override def executeInit(builderConfig: BuilderConfig) = withClient {
-    case (client, k8s) =>
-      val containerDef = Container(
-        name = "tfbuilder",
-        image = builderConfig.image,
-        command = List("tail", "-f", "/dev/null")
-      )
-
-      val selector = LabelSelector(LabelSelector.IsEqualRequirement("component", builderConfig.containerName))
-
-      val template = Pod.Template.Spec.named("tfbuilder").addContainer(containerDef).addLabel("component" -> builderConfig.containerName)
-
-      val deploymentDef = Deployment(builderConfig.containerName)
-        .withReplicas(1)
-        .withTemplate(template)
-        .withLabelSelector(selector)
-
-      for {
-        dep <- (k8s getOption [Deployment] builderConfig.containerName) flatMap {
-                case Some(_) => k8s update deploymentDef
-                case None    => k8s create deploymentDef
-              }
-        pod <- retryUntilSome(getPod(selector, client, k8s), delay, 12)
-      } yield pod.map(_ => ())
+  def streamTar(f: File, tarOut: TarArchiveOutputStream, base: String): Unit = {
+    val entry = new TarArchiveEntry(f, base)
+    tarOut.putArchiveEntry(entry)
+    if (f.isFile) {
+      println(f.getAbsolutePath)
+      val fStream = new FileInputStream(f)
+      IOUtils.copy(fStream, tarOut)
+      fStream.close()
+      tarOut.closeArchiveEntry()
+    } else {
+      tarOut.closeArchiveEntry()
+      f.listFiles.foreach(file => streamTar(file, tarOut, s"$base/${file.getName}"))
+    }
   }
 
-  override def executeScript(script: String, builderConfig: BuilderConfig, optional: Boolean = false): Either[NonEmptyList[ToolFormError], Unit] =
-//    getContainer(docker, builderConfig.containerName)
-//      .toRight(NonEmptyList.of(ToolFormError("Container not initialised"))) flatMap { container =>
-//      val scriptPath = s"/s2a/scripts/$script.sh"
-//      if (!fileExists(scriptPath, container, docker)) {
-//        if (optional) {
-//          println(s"Skipping optional script [$scriptPath] missing from builder")
-//          Right(())
-//        } else {
-//          Left(NonEmptyList.of(ToolFormError(s"Required script [$scriptPath] not present in builder image.")))
-//        }
-//      } else {
-//        val result = execute(Seq(scriptPath), container, docker)
-//
-//        result.exitCode match {
-//          case 0 => Right(())
-//          case _ => Left(NonEmptyList.of(ToolFormError(s"Non-zero exit code for $script phase")))
-//        }
-//      }
-//    } = {
+  def downloadDir(dir: String, builderConfig: BuilderConfig, pod: PodResource[Pod, DoneablePod]): Unit = {
+    val file        = builderConfig.stagingDir.resolve(s"$dir.tar").toFile
+    val writeStream = new FileOutputStream(file)
+    val watch = pod
+      .inContainer("tfbuilder")
+      .writingOutput(writeStream)
+      .exec("tar", "cf", "-", "--dir", s"/s2a/$dir", ".")
+    watch.close()
+  }
+
+  override def executeScript(script: String, builderConfig: BuilderConfig, optional: Boolean = false): Either[NonEmptyList[ToolFormError], Unit] = {
+
+    client.pods
+      .inNamespace(builderConfig.namespace)
+      .withName(builderConfig.containerName)
+      .inContainer("tfbuilder")
+      .redirectingOutput()
+      .exec(s"/s2a/scripts/$script.sh")
+
     Right(())
 
+  }
   case class ExecutionResult(exitCode: Int)
 
-  def execute(command: Seq[String], container: Container, docker: DockerClient): ExecutionResult =
-    ExecutionResult(0)
+//  def execute(command: Seq[String], container: Container, docker: DockerClient): ExecutionResult =
+//    ExecutionResult(0)
+//
+//  def fileExists(script: String, container: Container, docker: DockerClient): Boolean =
+//    execute(Seq("ls", script), container, docker).exitCode == 0
 
-  def fileExists(script: String, container: Container, docker: DockerClient): Boolean =
-    execute(Seq("ls", script), container, docker).exitCode == 0
+  override def executeCleanup(builderConfig: BuilderConfig) = {
+    val pod = client.pods
+      .inNamespace(builderConfig.namespace)
+      .withName(builderConfig.containerName)
 
-  override def executeCleanup(builderConfig: BuilderConfig) =
+    downloadDir("test_results", builderConfig, pod)
+    downloadDir("artifacts", builderConfig, pod)
+    println(s"Deleting ${builderConfig.containerName}")
+    client.pods
+      .inNamespace(builderConfig.namespace)
+      .withName(builderConfig.containerName)
+      .delete()
     Right(())
+  }
 
 }
